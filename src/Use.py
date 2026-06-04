@@ -91,7 +91,7 @@ while(True):
     out = generate(
         model=model,
         idx=start,
-        max_new_tokens=300,
+        max_new_tokens=500,
         block_size=64,
         temperature=0.8
     )
