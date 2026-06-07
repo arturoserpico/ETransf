@@ -35,14 +35,14 @@ class ENodeTransformer(nn.Module):
 
         self.linear = nn.Linear(d_model, d_model)
 
-    def forward(self, ops, ops_parameters, args):
+    def forward(self, ops: torch.Tensor, ops_parameters: torch.Tensor, args: torch.Tensor):
         B = ops.shape[0]
         T = args.shape[1] if args.dim() > 1 else 0
         D = self.d_model
 
         ops_embeddings = self.op_embedding(ops)  # (B, D)
 
-        op_args_embeddings = self.op_param_embedding(ops_parameters)
+        op_args_embeddings = self.op_param_embedding(ops_parameters.unsqueeze(-1))
 
         ops_embeddings = self.op_param_combine(ops_embeddings, op_args_embeddings)
 
