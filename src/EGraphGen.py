@@ -6,59 +6,19 @@ from typing import Callable, Optional
 
 # Assumes egraph.py (the implementation you provided) is importable.
 from EGraph import (
-    EGraph, ENode, EClass,
+    EGraph, ENode, EClass, ExprNode,
     OpTable, SymTable,
     make_var, make_const, make_op,
     RewriteRule,
 )
 
 
-# ===========================================================================
-# Expression Tree (intermediate representation before EGraph insertion)
-# ===========================================================================
-
-@dataclass
-class ExprNode:
-    """
-    A plain recursive expression tree — not yet an EGraph.
-
-    Mirrors ENode's integer encoding:
-      op_id == OpTable.OP_VAR   →  param = symbol ID in SymTable   (leaf)
-      op_id == OpTable.OP_CONST →  param = literal integer value    (leaf)
-      anything else             →  children hold sub-ExprNodes      (interior)
-
-    param is unused (0) for interior nodes, exactly as in ENode.
-    """
-    op_id:    int
-    param:    int                 = 0
-    children: list["ExprNode"]   = field(default_factory=list)
-
-    def depth(self) -> int:
-        if not self.children:
-            return 0
-        return 1 + max(c.depth() for c in self.children)
-
-    def size(self) -> int:
-        return 1 + sum(c.size() for c in self.children)
-
-    def format(self, OT: OpTable, ST: Optional[SymTable] = None) -> str:
-        """Human-readable string, mirroring ENode.format()."""
-        if not self.children:
-            if self.op_id == OpTable.OP_VAR:
-                return ST.name(self.param) if ST else str(self.param)
-            if self.op_id == OpTable.OP_CONST:
-                return str(self.param)
-            return OT.name(self.op_id)
-        args = " ".join(c.format(OT, ST) for c in self.children)
-        return f"({OT.name(self.op_id)} {args})"
-
-
-def _insert_expr(node: ExprNode, eg: EGraph) -> int:
+def insert_expr(node: ExprNode, eg: EGraph) -> int:
     """Recursively insert an ExprNode tree into *eg*; return root e-class ID."""
     # Leaves: pass op_id and param straight through — identical to ENode construction.
     if not node.children:
         return eg.add(ENode(op=node.op_id, children=(), param=node.param))
-    child_ids = [_insert_expr(c, eg) for c in node.children]
+    child_ids = [insert_expr(c, eg) for c in node.children]
     return eg.add(ENode(op=node.op_id, children=tuple(child_ids), param=0))
 
 
@@ -183,7 +143,7 @@ def generate_egraphs(
 
         # 3. Build EGraph — no OpTable needed, op IDs go straight through
         eg = EGraph()
-        _insert_expr(expr, eg)
+        insert_expr(expr, eg)
 
         # 4. (Optional) apply rewrite rules
         if cfg.apply_rules and cfg.rules:

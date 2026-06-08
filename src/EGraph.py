@@ -4,7 +4,6 @@ from typing import Any, Callable, Optional
 from collections import defaultdict
 import itertools
  
- 
 # ===========================================================================
 # Operator Table
 # ===========================================================================
@@ -114,6 +113,41 @@ class SymTable:
                 for sid in sorted(self._id_to_name)]
         return "SymTable:\n" + "\n".join(rows)
  
+
+@dataclass
+class ExprNode:
+    """
+    A plain recursive expression tree — not yet an EGraph.
+
+    Mirrors ENode's integer encoding:
+      op_id == OpTable.OP_VAR   →  param = symbol ID in SymTable   (leaf)
+      op_id == OpTable.OP_CONST →  param = literal integer value    (leaf)
+      anything else             →  children hold sub-ExprNodes      (interior)
+
+    param is unused (0) for interior nodes, exactly as in ENode.
+    """
+    op_id:    int
+    param:    int                 = 0
+    children: list["ExprNode"]   = field(default_factory=list)
+
+    def depth(self) -> int:
+        if not self.children:
+            return 0
+        return 1 + max(c.depth() for c in self.children)
+
+    def size(self) -> int:
+        return 1 + sum(c.size() for c in self.children)
+
+    def format(self, OT: OpTable, ST: Optional[SymTable] = None) -> str:
+        """Human-readable string, mirroring ENode.format()."""
+        if not self.children:
+            if self.op_id == OpTable.OP_VAR:
+                return ST.name(self.param) if ST else str(self.param)
+            if self.op_id == OpTable.OP_CONST:
+                return str(self.param)
+            return OT.name(self.op_id)
+        args = " ".join(c.format(OT, ST) for c in self.children)
+        return f"({OT.name(self.op_id)} {args})"
  
 # ===========================================================================
 # E-Node
@@ -359,59 +393,71 @@ class EGraph:
     # ------------------------------------------------------------------
     # Extraction
     # ------------------------------------------------------------------
- 
+
     def extract(
         self,
-        cls_id:   int,
-        optable:  Optional[OpTable]  = None,
-        symtable: Optional[SymTable] = None,
-        cost_fn:  Optional[Callable[[ENode, list[float]], float]] = None,
-    ) -> tuple[str, float]:
+        cls_id: int,
+        cost_fn: Optional[Callable[[ExprNode], float]] = None,
+    ) -> tuple[ExprNode, float]:
         """
-        Extract the cheapest expression from *cls_id*.
-        Returns (pretty_string, cost).  Default cost = AST node count.
+        Extract the cheapest ExprNode tree structure from *cls_id*.
+        
+        Parameters:
+        -----------
+        cost_fn : Callable[[ExprNode], float], optional
+            A function mapping a structural ExprNode tree to a scalar cost score.
+            If None, defaults to measuring the size (number of nodes) of the AST.
+            
+        Returns:
+        --------
+        tuple[ExprNode, float] : (optimal_expr_node, total_cost)
         """
+        from EGraphGen import ExprNode
+
         if cost_fn is None:
-            cost_fn = lambda node, child_costs: 1 + sum(child_costs)
+            # Fallback cost: total number of nodes in the completed ExprNode tree
+            cost_fn = lambda expr_node: float(expr_node.size())
  
-        best: dict[int, tuple[Optional[str], float]] = {}
+        # Memoization cache: canonical e-class ID -> (best_expr_node, minimum_cost)
+        best: dict[int, tuple[Optional[ExprNode], float]] = {}
  
-        def visit(cid: int) -> tuple[Optional[str], float]:
+        def visit(cid: int) -> tuple[Optional[ExprNode], float]:
             cid = self.find(cid)
             if cid in best:
                 return best[cid]
-            best[cid] = (None, float("inf"))    # sentinel against cycles
+                
+            # Insert a cycle-breaking sentinel
+            best[cid] = (None, float("inf"))
  
             for node in self._classes[cid].nodes:
                 child_results = [visit(c) for c in node.children]
+                
+                # Prune paths that lead into unextractable cycles
                 if any(expr is None for expr, _ in child_results):
                     continue
-                child_costs  = [cost for _, cost in child_results]
-                child_exprs  = [expr for expr, _ in child_results]
-                c = cost_fn(node, child_costs)
+                    
+                child_exprs = [expr for expr, _ in child_results]
+                
+                # Assemble the concrete ExprNode tree branch structure
+                candidate_ast = ExprNode(
+                    op_id=node.op, 
+                    param=node.param, 
+                    children=child_exprs
+                )
+
+                # Compute the cost of the entire sub-tree layout directly
+                c = cost_fn(candidate_ast)
+                
                 if c < best[cid][1]:
-                    if optable:
-                        op_name = optable.name(node.op)
-                        if not node.children:
-                            if node.op == OpTable.OP_VAR:
-                                s = symtable.name(node.param) if symtable else str(node.param)
-                            elif node.op == OpTable.OP_CONST:
-                                s = str(node.param)
-                            else:
-                                s = op_name
-                        else:
-                            s = f"({op_name} {' '.join(child_exprs)})"
-                    else:
-                        # Fall back to raw integer representation
-                        if not node.children:
-                            s = f"op{node.op}[{node.param}]"
-                        else:
-                            s = f"(op{node.op} {' '.join(child_exprs)})"
-                    best[cid] = (s, c)
+                    best[cid] = (candidate_ast, c)
  
             return best[cid]
  
-        return visit(cls_id)
+        optimal_ast, cost = visit(cls_id)
+        if optimal_ast is None:
+            raise RuntimeError(f"Failed to extract expression from e-class {cls_id} due to cycles.")
+            
+        return optimal_ast, cost
  
     # ------------------------------------------------------------------
     # Debug helpers

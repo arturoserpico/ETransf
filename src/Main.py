@@ -30,6 +30,8 @@ rules = [
         rhs=cpat(0)),
 ]
 
+print(eg.extract(add))
+
 print(eg.pretty())
 
 print(eg.is_rule_applicable_at(rules[2], eg._classes[a].nodes[0]))
