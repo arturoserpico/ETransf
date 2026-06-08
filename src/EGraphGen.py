@@ -49,7 +49,7 @@ class ExprGenConfig:
     leaf_var_prob: float           = 0.6
 
 
-def _random_expr(cfg: ExprGenConfig, depth: int = 0) -> ExprNode:
+def random_expr(cfg: ExprGenConfig, depth: int = 0) -> ExprNode:
     """Recursively build a random ExprNode using integer op IDs throughout."""
     force_leaf = (depth >= cfg.max_depth)
     force_int  = (depth < cfg.min_depth)
@@ -65,7 +65,7 @@ def _random_expr(cfg: ExprGenConfig, depth: int = 0) -> ExprNode:
 
     # Interior node
     op_id, arity = random.choice(cfg.ops)
-    children = [_random_expr(cfg, depth + 1) for _ in range(arity)]
+    children = [random_expr(cfg, depth + 1) for _ in range(arity)]
     return ExprNode(op_id=op_id, children=children)
 
 
@@ -132,7 +132,7 @@ def generate_egraphs(
         attempts += 1
 
         # 1. Generate a random expression tree (all integer IDs, no strings)
-        expr = _random_expr(cfg.expr_cfg)
+        expr = random_expr(cfg.expr_cfg)
 
         # 2. (Optional) deduplicate by canonical integer s-expression
         if cfg.deduplicate:

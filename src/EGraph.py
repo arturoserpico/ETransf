@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 from collections import defaultdict
 import itertools
+import bisect
  
 # ===========================================================================
 # Operator Table
@@ -153,7 +154,7 @@ class ExprNode:
 # E-Node
 # ===========================================================================
  
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class ENode:
     """
     An e-node: an integer-encoded operator applied to zero or more e-class IDs.
@@ -327,7 +328,12 @@ class EGraph:
  
         winner_cls = self._classes[merged]
         loser_cls  = self._classes[loser]
-        winner_cls.nodes  |= loser_cls.nodes
+        
+        # was: winner_cls.nodes |= loser_cls.nodes
+        for node in loser_cls.nodes:
+            if node not in winner_cls.nodes:
+                bisect.insort(winner_cls.nodes, node)
+
         winner_cls.parents += loser_cls.parents
  
         self._worklist.append((merged, loser))
