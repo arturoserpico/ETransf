@@ -503,6 +503,17 @@ class EGraph:
 
         return [self.find(r) for r in results]
     
+    def is_rule_applicable_at(self, rule: RewriteRule, node: ENode) -> bool:
+        """
+        Return True if *rule*'s LHS matches *node* in this graph, False otherwise.
+        The graph is never modified.
+        """
+        canon = self._canonicalize(node)
+        if canon not in self._memo:
+            return False
+        cls_id = self.find(self._memo[canon])
+        return rule.lhs.match(canon, cls_id, self) is not None
+
     @property
     def eclass_count(self) -> int:
         """Number of canonical (non-merged) e-classes."""

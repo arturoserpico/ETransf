@@ -24,9 +24,6 @@ class PolicyBlock(nn.Module):
         self.norm = nn.RMSNorm(d_model)
 
         self.linear = nn.Linear(d_model, action_count)
-
-        self.softmax = nn.Softmax(dim=-1)
-
     def forward(self, nodes, classes):
         tokens = self.enode_eclass_combine(nodes, classes)
         
@@ -34,4 +31,4 @@ class PolicyBlock(nn.Module):
 
         tokens = self.norm(tokens)
 
-        return self.softmax(self.linear(tokens))
+        return self.linear(tokens)
