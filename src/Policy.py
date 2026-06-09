@@ -4,30 +4,31 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import ENodeEmbedding, EClassEmbedding, PolicyBlock, EGraph
+import ENodeEmbedding, EClassEmbedding, PolicyBlock, EGraph, AttentionPooling
 
 class Policy(nn.Module):
     def __init__(self, 
-                 rules: list[EGraph.RewriteRule], 
+                 rules: list[EGraph.RewriteRule],
+                 operators: EGraph.OpTable, 
                  d_model: int, 
                  n_layers: int, 
-                 n_layers_node: int, 
-                 n_layers_class: int, 
                  n_heads: int, 
-                 n_heads_node: int,
-                 n_heads_class: int, 
-                 max_arity: int, 
-                 op_count: int):
+                 n_layers_class: int, 
+                 n_heads_class: int,
+                 n_hidden_per_arg: int, 
+                 n_hidden_per_param: int):
         super().__init__()
         
         self.rules = rules
         self.d_model = d_model
-        self.enode_embedding = ENodeEmbedding.ENodeTransformer(op_count, max_arity, d_model, n_heads_node, n_layers_node)
+        self.enode_embedding = ENodeEmbedding.ENodeNetworks(d_model, operators, n_hidden_per_arg, n_hidden_per_param)
         self.eclass_emdedding = EClassEmbedding.EClassTransformer(d_model, n_heads_class, n_layers_class)
         self.target_eclass_linear = nn.Linear(d_model, d_model)
         self.core = PolicyBlock.PolicyBlock(len(rules) + 3, d_model, n_heads, n_layers)
         self.loop_resulution_vector = nn.Parameter(torch.randn(d_model))
         self.softmax = nn.Softmax(dim=-1)
+        self.value_head = nn.Linear(d_model, 1)
+        self.value_pooling = AttentionPooling.AttentionPooling(d_model)
 
     def make_class_embedding(self, eg: EGraph.EGraph, target_eclass: int, eclass: EGraph.EClass, 
                              visited_nodes: dict[EGraph.ENode, torch.Tensor], 
@@ -73,13 +74,13 @@ class Policy(nn.Module):
         for eclass in enode.child_classes(eg):
             collect_embeddings.append(self.make_class_embedding(eg, target_eclass, eclass, visited_nodes, visited_classes))
 
-        tensor = torch.empty(1, 0, self.d_model) if len(collect_embeddings) == 0 else torch.stack(collect_embeddings).unsqueeze(0)
+        tensor = torch.empty(0, self.d_model) if len(collect_embeddings) == 0 else torch.stack(collect_embeddings)
 
         device = next(self.parameters()).device
 
         tensor = tensor.to(device)
 
-        embedding = self.enode_embedding(torch.tensor([enode.op], device=device), torch.tensor([enode.param], dtype=torch.float32, device=device), tensor).squeeze(0)
+        embedding = self.enode_embedding(enode.op, enode.param, tensor)
         
         visited_nodes[enode] = embedding
 
@@ -122,6 +123,9 @@ class Policy(nn.Module):
                 if not eg.is_rule_applicable_at(self.rules[j], nodes[i]):
                     result[i, j + 3] = float('-inf')
 
-        return nodes, self.softmax(result)
+        value_emb = self.value_pooling(nodes_tensor.squeeze(-1)) 
+        value = self.value_head(value_emb).squeeze()
+
+        return nodes, self.softmax(result), value
 
 

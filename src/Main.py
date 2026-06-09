@@ -6,6 +6,7 @@ from EGraphGen import *
 import Episode
 import Train
 import matplotlib.pyplot as plt
+from concurrent.futures import ThreadPoolExecutor
 
 OT = make_math_optable()
 ST = SymTable()
@@ -136,16 +137,15 @@ rules = [
 ]
 
 model = Policy.Policy(
-    rules          = rules,
-    d_model        = 96,
-    n_layers       = 4,
-    n_layers_node  = 2,
-    n_layers_class = 2,
-    n_heads        = 4,
-    n_heads_node   = 4,
-    n_heads_class  = 4,
-    max_arity      = 2,
-    op_count       = len(OT)
+    rules=rules,
+    operators=OT,
+    d_model=96,
+    n_layers=3,
+    n_layers_class=2,
+    n_heads=8,
+    n_heads_class=4,
+    n_hidden_per_arg=4,
+    n_hidden_per_param=4
 )
 
 print("parameter info: ")
@@ -157,26 +157,101 @@ def valuation(expr: ExprNode) -> float:
     # example: count AST nodes as cost
     return 1 + sum(valuation(c) for c in expr.children)
 
-reward_history, loss_history = Train.train(
-    model         = model,
-    expr_cfg      = expr_cfg,
-    valuation_fun = valuation,
-    rules         = rules,
-    n_episodes    = 30_000,
-    max_steps     = 200,
-    log_every     = 1,
-    depth_interval= 5000,
-    start_depth=3,
-    max_depth=10,
-    lr=1e-7,
-    step_penalty=0,
-    exit_factor=0.5,
-    batch_size=128,
-    n_threads=24
+optimizer = torch.optim.Adam(model.parameters(), lr=3e-5)
+
+# --- fixed test expression: (x + 0) ---
+expr = ExprNode(
+    op_id    = OT.id("add"),
+    children = [
+        ExprNode(op_id=OpTable.OP_VAR,   param=ST.intern("x")),
+        ExprNode(op_id=OpTable.OP_CONST, param=0),
+    ]
 )
+
+print(f"test expression cost: {valuation(expr)}")
+print(f"optimal cost: 1  (just x)\n")
+
+# --- config ---
+device = torch.device("cpu")
+n_episodes  = 5000
+batch_size  = 32
+n_threads   = 24
+log_every   = 1
+
+def run_one(_) -> tuple[torch.Tensor, float]:
+    runner = Episode.Runner(
+        model          = model,
+        valuation_fun  = valuation,
+        step_penalty   = 0.05,
+        growth_penalty = 0.0,
+        exit_factor    = 5.0,
+    )
+    return runner.run_episode_train_ppo(
+        expr       = expr,
+        max_steps  = 200,
+        gamma      = 0.99,
+        clip_eps   = 0.2,
+        entropy_coeff = 0.001,
+        value_coeff   = 0.25,
+        ppo_epochs    = 2,
+        device        = device,
+    )
+
+# --- batched training loop ---
+n_batches    = (n_episodes + batch_size - 1) // batch_size
+reward_history: list[float] = []
+loss_history:   list[float] = []
+
+for batch in range(1, n_batches + 1):
+    batch_losses:  list[torch.Tensor] = []
+    batch_rewards: list[float]        = []
+
+    for chunk_start in range(0, batch_size, n_threads):
+        chunk_size = min(n_threads, batch_size - chunk_start)
+
+        with ThreadPoolExecutor(max_workers=chunk_size) as pool:
+            futures = [pool.submit(run_one, None) for _ in range(chunk_size)]
+            for f in futures:
+                loss, reward = f.result()
+                batch_losses.append(loss)
+                batch_rewards.append(reward)
+
+    optimizer.zero_grad()
+    avg_loss = torch.stack(batch_losses).mean()
+    avg_loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    optimizer.step()
+
+    reward_history.extend(batch_rewards)
+    loss_history.append(avg_loss.item())
+
+    episode = batch * batch_size
+    if batch % log_every == 0:
+        avg_reward = sum(batch_rewards) / len(batch_rewards)
+        print(
+            f"episode {episode:>5}"
+            f"  loss={avg_loss.item():+.4f}"
+            f"  avg_reward={avg_reward:.4f}"
+        )
+
+# --- final check ---
+print("\n--- final inference ---")
+runner = Episode.Runner(
+    model          = model,
+    valuation_fun  = valuation,
+    step_penalty   = 0.0,
+    growth_penalty = 0.0,
+    exit_factor    = 1.0,
+)
+result = runner.run_episode(expr, max_steps=50)
+print(f"input:  (x + 0)  cost={valuation(expr)}")
+print(f"output: {result}  cost={valuation(result)}")
+print(f"solved: {valuation(result) == 1}")
 
 torch.save(model.state_dict(), "data/model.pt")
 
 plt.plot(loss_history)
+
+plt.plot(reward_history)
 
 plt.show()
